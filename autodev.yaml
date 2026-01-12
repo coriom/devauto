@@ -1,0 +1,12 @@
+schema_version: "1.0"
+
+paths:
+  projects_root: "projets"
+  prompts:
+    manager: "prompts/manager_system.txt"
+    dev: "prompts/dev_system.txt"
+
+constraints:
+  allowed_paths: ["src/", "test/", "script/", "lib/"]
+  blocked_paths: [".env", "secrets/", ".git/"]
+  forbid_keywords: ["PRIVATE_KEY", "MNEMONIC", "API_KEY"]
