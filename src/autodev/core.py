@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 from pydantic import ValidationError
 
@@ -13,6 +13,7 @@ from .llm import generate_json
 from .progress import Progress
 
 RUNS_DIRNAME = "runs"
+STATE_FILENAME = "STATE.json"
 
 
 # ---------- Run store ----------
@@ -71,6 +72,46 @@ def enforce_policies_on_ops(ops: List[FileOp], cfg: LoadedConfig) -> None:
             raise ValueError(f"Path not in allowed_paths: {rel}")
 
 
+# ---------- STATE handling ----------
+def state_path(workspace_root: Path) -> Path:
+    return workspace_root / STATE_FILENAME
+
+
+def default_state(objective: str, objective_file: str = "") -> Dict[str, Any]:
+    """
+    Minimal, scalable state. Can evolve without breaking older runs.
+    """
+    return {
+        "schema_version": "1.0",
+        "objective": objective,
+        "objective_file": objective_file or None,
+        "phase": "bootstrapping",
+        "done": [],
+        "todo": [],
+        "decisions": [],
+        "last_run": None,
+    }
+
+
+def load_or_init_state(workspace_root: Path, objective: str, objective_file: str = "") -> Dict[str, Any]:
+    p = state_path(workspace_root)
+    if not p.exists():
+        st = default_state(objective=objective, objective_file=objective_file)
+        write_json(p, st)
+        return st
+    try:
+        return read_json(p)
+    except Exception:
+        # If state is corrupted, keep it recoverable
+        st = default_state(objective=objective, objective_file=objective_file)
+        write_json(p, st)
+        return st
+
+
+def save_state(workspace_root: Path, st: Dict[str, Any]) -> None:
+    write_json(state_path(workspace_root), st)
+
+
 # ---------- Context building ----------
 def build_context(workspace_root: Path, cfg: LoadedConfig, focus: str = "") -> Tuple[List[str], List[Dict]]:
     """
@@ -105,9 +146,20 @@ def build_context(workspace_root: Path, cfg: LoadedConfig, focus: str = "") -> T
 
 
 # ---------- Prompt assembly ----------
-def make_manager_prompt(cfg: LoadedConfig, objective: str, conventions: List[str], relevant_files: List[Dict]) -> str:
+def make_manager_prompt(
+    cfg: LoadedConfig,
+    objective: str,
+    conventions: List[str],
+    relevant_files: List[Dict],
+    state: Dict[str, Any],
+) -> str:
+    """
+    Manager always receives objective + current STATE, so it cannot "forget".
+    Later you will extend Ticket schema to include progress fields and state updates.
+    """
     payload = {
         "objective": objective,
+        "state": state,
         "conventions": conventions,
         "relevant_files": relevant_files,
         "ticket_schema_hint": {
@@ -118,6 +170,10 @@ def make_manager_prompt(cfg: LoadedConfig, objective: str, conventions: List[str
             "definition_of_done": ["..."],
             "plan_steps": ["..."],
             "labels": ["optional"],
+            # New scalable fields (you will add them to models.py):
+            "progress_summary": "Where we are now",
+            "remaining_work": ["What remains after this ticket"],
+            "state_update": {"optional": "partial state update for STATE.json"},
         },
     }
     return cfg.manager_prompt.strip() + "\n\nINPUT:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
@@ -194,7 +250,7 @@ def get_workspace_root(repo_root: Path, cfg: LoadedConfig, project: str) -> Path
 
 
 # ---------- Human-in-the-loop run ----------
-def create_run(repo_root: Path, project: str, objective: str, focus: str = "") -> Path:
+def create_run(repo_root: Path, project: str, objective: str, focus: str = "", objective_file: str = "") -> Path:
     """
     Creates a run folder with prompts + empty json templates.
     User pastes Manager and Dev JSON outputs into ticket.json and dev_response.json,
@@ -207,8 +263,12 @@ def create_run(repo_root: Path, project: str, objective: str, focus: str = "") -
     run_dir = next_run_dir(repo_root)
     ensure_dir(run_dir)
 
+    # Load or initialize STATE.json inside the project workspace
+    st = load_or_init_state(workspace_root, objective=objective, objective_file=objective_file)
+    write_json(run_dir / "state_before.json", st)
+
     conventions, relevant_files = build_context(workspace_root, cfg, focus=focus)
-    manager_prompt = make_manager_prompt(cfg, objective, conventions, relevant_files)
+    manager_prompt = make_manager_prompt(cfg, objective, conventions, relevant_files, state=st)
 
     (run_dir / "manager_prompt.txt").write_text(manager_prompt, encoding="utf-8")
     write_json(run_dir / "ticket.json", {"TODO": "Paste Manager JSON Ticket here"})
@@ -216,6 +276,7 @@ def create_run(repo_root: Path, project: str, objective: str, focus: str = "") -
 
     meta = {
         "objective": objective,
+        "objective_file": objective_file or None,
         "focus": focus,
         "project": project,
         "workspace_root": workspace_root.as_posix(),
@@ -234,6 +295,14 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         raise ValueError("Project not found. Provide --project or ensure run_meta.json contains it.")
 
     workspace_root = get_workspace_root(repo_root, cfg, project_name)
+
+    # Load current state and snapshot it for auditing
+    st_before = load_or_init_state(
+        workspace_root,
+        objective=meta.get("objective", ""),
+        objective_file=meta.get("objective_file", "") or "",
+    )
+    write_json(run_dir / "state_before.json", st_before)
 
     # Load & validate ticket
     raw_ticket = read_json(run_dir / "ticket.json")
@@ -259,6 +328,27 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     # Apply ops into projets/<project>/*
     apply_file_ops(workspace_root, cfg, dev.file_ops)
 
+    # --- Update STATE.json (best-effort) ---
+    # This will become strict once you add these fields into models.py.
+    st_after = st_before.copy()
+    st_after["last_run"] = run_dir.name
+
+    # Optional: manager can include these fields later
+    if isinstance(raw_ticket, dict):
+        if "state_update" in raw_ticket and isinstance(raw_ticket["state_update"], dict):
+            # shallow merge for now (scalable; can evolve to JSON Patch)
+            for k, v in raw_ticket["state_update"].items():
+                st_after[k] = v
+
+        # If manager provides progress fields, store them for continuity
+        if "progress_summary" in raw_ticket and isinstance(raw_ticket["progress_summary"], str):
+            st_after["progress_summary"] = raw_ticket["progress_summary"]
+        if "remaining_work" in raw_ticket and isinstance(raw_ticket["remaining_work"], list):
+            st_after["todo"] = raw_ticket["remaining_work"]
+
+    save_state(workspace_root, st_after)
+    write_json(run_dir / "state_after.json", st_after)
+
     # Write summary
     summary = [
         f"# AutoDev Run {run_dir.name}",
@@ -277,23 +367,26 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         "## File ops",
         *([f"- {op.op} {op.path}" for op in dev.file_ops] or ["- (none)"]),
         "",
+        "## State",
+        f"- STATE.json updated (last_run={run_dir.name})",
+        "",
     ]
     (run_dir / "summary.md").write_text("\n".join(summary), encoding="utf-8")
 
 
 # ---------- Full auto mode (API) ----------
-def auto_run(repo_root: Path, project: str, objective: str, focus: str = "") -> Path:
+def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", objective_file: str = "") -> Path:
     """
     Full pipeline:
-    - create run
+    - create run (and inject STATE into manager prompt)
     - call Manager API -> ticket.json
     - call Dev API -> dev_response.json
-    - apply -> writes into projets/<project>/
+    - apply -> writes into projets/<project>/ and updates STATE.json
     """
     p = Progress()
 
-    p.tick("Create run folder")
-    run_dir = create_run(repo_root, project, objective, focus=focus)
+    p.tick("Create run folder (+ load STATE)")
+    run_dir = create_run(repo_root, project, objective, focus=focus, objective_file=objective_file)
 
     p.tick("Load manager prompt")
     manager_prompt = (run_dir / "manager_prompt.txt").read_text(encoding="utf-8")
@@ -316,7 +409,7 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "") -> 
     p.tick("Write dev_response.json")
     write_json(run_dir / "dev_response.json", dev_obj)
 
-    p.tick("Apply file ops into project workspace")
+    p.tick("Apply file ops + update STATE.json")
     apply_run(repo_root, run_dir, project=project)
 
     p.tick("Done")

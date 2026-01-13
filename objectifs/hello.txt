@@ -1,11 +1,16 @@
-Créer un contrat Solidity minimal dans src/
+créer un quizz de trois questions à choix multiple dans src/
 
 Deux fichier 
-Hello.sol 
-Test.sol
+questions.txt
+main.py
+
+et un dossier vide nommé blablabla
+
+ajouter un dossier nommé testsite
+    dans ce dossier créer un site web front end, (html uniquement) 
+    un site de présentation de la différence entre le communiste et le capitalisme
+    
 
 Contraintes:
-- SPDX MIT
-- pragma ^0.8.20
-- fonction greet() retourne "Hello, AutoDev!"
-- fonction autre() avec ce que tu veux dedans.
+- les questions sont dans questions.txt, et main.py va les chercher pour les afficher
+- le programme doit être sécurisé dans les saisies user

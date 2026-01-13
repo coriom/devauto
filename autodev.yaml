@@ -7,7 +7,7 @@ paths:
     dev: "prompts/dev_system.txt"
 
 constraints:
-  allowed_paths: ["src/", "test/", "script/", "lib/"]
-  blocked_paths: [".env", "secrets/", ".git/"]
+  allowed_paths: [""]
+  blocked_paths: [".env", "secrets/", ".git/", ".venv", "__pycache__/"]
   forbid_keywords: ["PRIVATE_KEY", "MNEMONIC", "API_KEY"]
   max_written_bytes_per_file: 300000
