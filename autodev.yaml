@@ -10,3 +10,4 @@ constraints:
   allowed_paths: ["src/", "test/", "script/", "lib/"]
   blocked_paths: [".env", "secrets/", ".git/"]
   forbid_keywords: ["PRIVATE_KEY", "MNEMONIC", "API_KEY"]
+  max_written_bytes_per_file: 300000
