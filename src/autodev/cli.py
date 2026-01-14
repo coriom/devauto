@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .core import create_run, apply_run, auto_run, loop_run
+# core is now a package: src/autodev/core/__init__.py re-exports these
+from .core import apply_run, auto_run, create_run, loop_run
 
 
 def _load_objective(args) -> str:

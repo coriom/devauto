@@ -949,6 +949,13 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
         )
 
         errs = _manager_validation_errors(ticket_obj, st)
+
+        # IMPORTANT: validate full Ticket schema (id/title/goal/etc)
+        try:
+            _ = Ticket.model_validate(ticket_obj)
+        except ValidationError as e:
+            errs.append(f"Ticket schema validation error: {e}")
+
         if not errs:
             break
 
