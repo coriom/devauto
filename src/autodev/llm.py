@@ -26,7 +26,11 @@ def _get_model(role: str) -> str:
 
 def generate_json(role: str, prompt_text: str, *, max_retries: int = 2) -> Dict[str, Any]:
     """
-    Calls Responses API and expects the model to return ONLY valid JSON in output_text.
+    Calls Responses API and expects the model to return ONLY valid JSON.
+
+    Uses JSON mode via:
+      text={"format": {"type": "json_object"}}
+    so outputs are always valid JSON objects (far fewer repair loops).
     """
     key = _get_key(role)
     if not key:
@@ -39,19 +43,28 @@ def generate_json(role: str, prompt_text: str, *, max_retries: int = 2) -> Dict[
 
     last_text = ""
     for attempt in range(max_retries + 1):
-        # Responses API accepts a string 'input'. :contentReference[oaicite:2]{index=2}
+        user_input = prompt_text if attempt == 0 else (
+            "Your previous output was NOT valid JSON.\n"
+            "Return ONLY a valid JSON object. No markdown, no commentary.\n\n"
+            f"Previous output:\n{last_text}"
+        )
+
         resp = client.responses.create(
             model=model,
-            input=prompt_text if attempt == 0 else (
-                "Your previous output was NOT valid JSON.\n"
-                "Return ONLY valid JSON. No markdown, no commentary.\n\n"
-                f"Previous output:\n{last_text}"
-            ),
+            input=user_input,
+            # Force JSON object output (JSON mode)
+            text={"format": {"type": "json_object"}},
         )
+
         text = (resp.output_text or "").strip()
         last_text = text
+
         try:
-            return json.loads(text)
+            obj = json.loads(text)
+            if not isinstance(obj, dict):
+                # we asked for json_object; defensive check
+                continue
+            return obj
         except json.JSONDecodeError:
             continue
 

@@ -28,16 +28,30 @@ class Ticket(BaseModel):
     definition_of_done: List[str] = Field(default_factory=list)
     plan_steps: List[str] = Field(default_factory=list)
 
-    # --- New: progress + memory (scalable) ---
+    # --- Progress + memory (scalable) ---
     # Where we are now (one paragraph)
     progress_summary: str = ""
 
     # What remains after this ticket (source-of-truth TODO)
     remaining_work: List[str] = Field(default_factory=list)
 
-    # Partial update to merge into projets/<project>/STATE.json
+    # Partial update to merge into projets/<project>/states/<id>.json
     # (shallow merge for MVP; can evolve to JSON Patch later)
     state_update: Dict[str, Any] = Field(default_factory=dict)
+
+    # --- Mode B: file governance (anti-redite / soft-lock) ---
+    # Explicit file targets for this ticket (preferred over implicit extraction)
+    files_to_modify: List[str] = Field(default_factory=list)
+
+    # Justification for touching each file (key = path)
+    # Strongly recommended for any file in files_to_modify, and REQUIRED for pinned retouch.
+    rationale_by_file: Dict[str, str] = Field(default_factory=dict)
+
+    # If you must retouch pinned files, list them here (must be subset of files_to_modify)
+    allow_retouch_pinned: List[str] = Field(default_factory=list)
+
+    # If you consider some files stable after this ticket, list them here (soft-lock)
+    pin_files: List[str] = Field(default_factory=list)
 
 
 class FileOp(BaseModel):

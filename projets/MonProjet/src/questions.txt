@@ -1,0 +1,31 @@
+# Format du fichier questions.txt (QCM)
+# - Le fichier contient une suite de blocs, séparés par au moins une ligne vide.
+# - Chaque bloc représente une question et suit ce schéma :
+#   QUESTION: <énoncé>
+#   A: <choix A>
+#   B: <choix B>
+#   C: <choix C>
+#   D: <choix D>
+#   ANSWER: <lettre A|B|C|D>
+# - Les champs doivent apparaître une fois chacun.
+
+QUESTION: Quelle est la capitale du Canada ?
+A: Toronto
+B: Vancouver
+C: Ottawa
+D: Montréal
+ANSWER: C
+
+QUESTION: Combien de minutes y a-t-il dans une heure ?
+A: 50
+B: 60
+C: 70
+D: 90
+ANSWER: B
+
+QUESTION: Quel gaz est le plus abondant dans l'atmosphère terrestre ?
+A: Oxygène
+B: Dioxyde de carbone
+C: Azote
+D: Hélium
+ANSWER: C

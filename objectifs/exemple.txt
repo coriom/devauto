@@ -1,0 +1,6 @@
+Créer un contrat Solidity minimal dans src/Hello.sol
+
+Contraintes:
+- SPDX MIT
+- pragma ^0.8.20
+- fonction greet() retourne "Hello, AutoDev!"

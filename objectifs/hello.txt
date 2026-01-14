@@ -1,13 +1,17 @@
 créer un quizz de trois questions à choix multiple dans src/
 
 Deux fichier 
-questions.txt
-main.py
+src/questions.txt
+src/main.py
 
 et un dossier vide nommé blablabla
+src/blablabla/
 
-ajouter un dossier nommé testsite
-    dans ce dossier créer un site web front end, (html uniquement) 
+créer un dossier nommé testsite
+src/testsite
+dans le dossier testsite
+    dans ce dossier créer un site web front end très simple, (html uniquement)
+    src/testsite/site.html 
     un site de présentation de la différence entre le communiste et le capitalisme
     
 
