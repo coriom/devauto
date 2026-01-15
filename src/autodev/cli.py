@@ -26,6 +26,25 @@ def _load_objective(args) -> str:
     raise SystemExit("Provide --objective or --objective-file")
 
 
+def _load_patch_text(args) -> str:
+    """
+    Optional patch file that contains prioritized modification instructions.
+    Returns empty string if not provided.
+    """
+    patch_file = getattr(args, "patch_file", "") or ""
+    if not patch_file:
+        return ""
+
+    p = Path(patch_file)
+    if not p.is_file():
+        raise SystemExit(f"Patch file not found: {p}")
+
+    text = p.read_text(encoding="utf-8").strip()
+    if not text:
+        raise SystemExit(f"Patch file is empty: {p}")
+    return text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="autodev",
@@ -38,6 +57,7 @@ def main() -> None:
     p_new.add_argument("--project", required=True, help="Project folder name under ./projets/")
     p_new.add_argument("--objective", default="", help="Objective as a string")
     p_new.add_argument("--objective-file", default="", help="Path to a text file containing the objective")
+    p_new.add_argument("--patch-file", default="", help="Optional path to a text file containing prioritized patches")
     p_new.add_argument("--focus", default="", help="Optional keyword to pick relevant files")
 
     # ---- apply ----
@@ -50,6 +70,7 @@ def main() -> None:
     p_auto.add_argument("--project", required=True, help="Project folder name under ./projets/")
     p_auto.add_argument("--objective", default="", help="Objective as a string")
     p_auto.add_argument("--objective-file", default="", help="Path to a text file containing the objective")
+    p_auto.add_argument("--patch-file", default="", help="Optional path to a text file containing prioritized patches")
     p_auto.add_argument("--focus", default="", help="Optional keyword to pick relevant files")
 
     # ---- loop ----
@@ -57,6 +78,7 @@ def main() -> None:
     p_loop.add_argument("--project", required=True, help="Project folder name under ./projets/")
     p_loop.add_argument("--objective", default="", help="Objective as a string")
     p_loop.add_argument("--objective-file", default="", help="Path to a text file containing the objective")
+    p_loop.add_argument("--patch-file", default="", help="Optional path to a text file containing prioritized patches")
     p_loop.add_argument("--focus", default="", help="Optional keyword to pick relevant files")
     p_loop.add_argument("--max-iter", type=int, default=10, help="Hard cap on iterations")
     p_loop.add_argument(
@@ -76,13 +98,30 @@ def main() -> None:
 
     if args.cmd == "new":
         objective = _load_objective(args)
-        run_dir = create_run(
-            repo_root,
-            args.project,
-            objective,
-            focus=args.focus,
-            objective_file=args.objective_file,
-        )
+        patch_text = _load_patch_text(args)
+
+        # Backward-compatible: only pass patch_text if core supports it.
+        # (Once core is updated, it should accept patch_text / patch_file.)
+        try:
+            run_dir = create_run(
+                repo_root,
+                args.project,
+                objective,
+                focus=args.focus,
+                objective_file=args.objective_file,
+                patch_text=patch_text,
+                patch_file=args.patch_file,
+            )
+        except TypeError:
+            # Core not updated yet; fall back to old signature
+            run_dir = create_run(
+                repo_root,
+                args.project,
+                objective,
+                focus=args.focus,
+                objective_file=args.objective_file,
+            )
+
         print(f"Created: {run_dir}")
         print(f"- Open {run_dir / 'manager_prompt.txt'} and paste Manager JSON into {run_dir / 'ticket.json'}")
         print(f"- Ask DEV with the Ticket JSON, paste response into {run_dir / 'dev_response.json'}")
@@ -99,30 +138,59 @@ def main() -> None:
 
     elif args.cmd == "auto":
         objective = _load_objective(args)
-        run_dir = auto_run(
-            repo_root,
-            args.project,
-            objective,
-            focus=args.focus,
-            objective_file=args.objective_file,
-        )
+        patch_text = _load_patch_text(args)
+
+        try:
+            run_dir = auto_run(
+                repo_root,
+                args.project,
+                objective,
+                focus=args.focus,
+                objective_file=args.objective_file,
+                patch_text=patch_text,
+                patch_file=args.patch_file,
+            )
+        except TypeError:
+            run_dir = auto_run(
+                repo_root,
+                args.project,
+                objective,
+                focus=args.focus,
+                objective_file=args.objective_file,
+            )
+
         print(f"Auto completed. Run: {run_dir}")
         print(f"Applied into projets/{args.project}/. See: {run_dir / 'summary.md'}")
 
     elif args.cmd == "loop":
         objective = _load_objective(args)
+        patch_text = _load_patch_text(args)
         stop_on_empty = not args.no_stop_on_empty_todo
 
-        summary = loop_run(
-            repo_root,
-            args.project,
-            objective,
-            objective_file=args.objective_file,
-            focus=args.focus,
-            max_iter=args.max_iter,
-            stop_on_empty_todo=stop_on_empty,
-            max_consecutive_errors=args.max_consecutive_errors,
-        )
+        try:
+            summary = loop_run(
+                repo_root,
+                args.project,
+                objective,
+                objective_file=args.objective_file,
+                focus=args.focus,
+                max_iter=args.max_iter,
+                stop_on_empty_todo=stop_on_empty,
+                max_consecutive_errors=args.max_consecutive_errors,
+                patch_text=patch_text,
+                patch_file=args.patch_file,
+            )
+        except TypeError:
+            summary = loop_run(
+                repo_root,
+                args.project,
+                objective,
+                objective_file=args.objective_file,
+                focus=args.focus,
+                max_iter=args.max_iter,
+                stop_on_empty_todo=stop_on_empty,
+                max_consecutive_errors=args.max_consecutive_errors,
+            )
 
         print("\nLoop summary:")
         print(f"- Project: {summary.get('project')}")
