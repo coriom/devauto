@@ -23,7 +23,12 @@ from .state import (
     update_state_files_after_ops,
 )
 from .utils import read_json, sanitize_remaining_work, utc_now_iso, write_json
-from .validation import manager_validation_errors, repair_prompt, validate_dev_ops_nonempty
+from .validation import (
+    manager_validation_errors,
+    repair_prompt,
+    validate_dev_ops_nonempty,
+    validate_dev_ops_scope,
+)
 
 
 def next_run_dir(repo_root: Path) -> Path:
@@ -41,6 +46,7 @@ def next_run_dir(repo_root: Path) -> Path:
 
 def get_workspace_root(repo_root: Path, project: str) -> Path:
     cfg = load_config(repo_root)
+    project = (project or "").strip()
     if not project:
         raise ValueError("Project name is required (e.g. --project DeOpt)")
     return cfg.projects_root / project
@@ -56,7 +62,7 @@ def create_run(
     mode: str = "human",  # "human" or "auto"
 ) -> Path:
     cfg = load_config(repo_root)
-    workspace_root = cfg.projects_root / project
+    workspace_root = get_workspace_root(repo_root, project)
     ensure_dir(workspace_root)
     ensure_dir(states_dir(workspace_root))
 
@@ -64,14 +70,22 @@ def create_run(
     ensure_dir(run_dir)
 
     st = load_or_init_state(workspace_root, objective=objective, objective_file=objective_file)
-    conventions, relevant_files = build_context(workspace_root, cfg, focus=focus, objective_text=objective)
+
+    conventions, relevant_files = build_context(
+        workspace_root,
+        cfg,
+        focus=focus,
+        objective_text=objective,
+    )
     manager_prompt = make_manager_prompt(cfg, objective, conventions, relevant_files, state=st)
 
+    # IMPORTANT: always persist objective into run_meta.json
     meta = {
         "ts": utc_now_iso(),
         "project": project,
         "workspace_root": workspace_root.as_posix(),
         "focus": focus,
+        "objective": objective,
         "objective_file": objective_file or None,
         "state_id": st.get("state_id"),
     }
@@ -93,13 +107,13 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     cfg = load_config(repo_root)
 
     meta = read_json(run_dir / "run_meta.json")
-    project_name = project or meta.get("project")
+    project_name = (project or meta.get("project") or "").strip()
     if not project_name:
         raise ValueError("Project not found. Provide --project or ensure run_meta.json contains it.")
 
-    workspace_root = cfg.projects_root / project_name
+    workspace_root = get_workspace_root(repo_root, project_name)
 
-    objective_text = meta.get("objective", "")
+    objective_text = meta.get("objective", "") or ""
     objective_file = meta.get("objective_file") or ""
     st = load_or_init_state(workspace_root, objective=objective_text, objective_file=objective_file)
 
@@ -107,9 +121,18 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     try:
         ticket = Ticket.model_validate(raw_ticket)
     except ValidationError as e:
-        log_event(repo_root, {"ts": utc_now_iso(), "type": "apply_error", "run": run_dir.name, "error": f"Invalid ticket.json: {e}"})
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "apply_error",
+                "run": run_dir.name,
+                "error": f"Invalid ticket.json: {e}",
+            },
+        )
         raise ValueError(f"Invalid ticket.json: {e}") from e
 
+    # Strict required fields (runtime checks, not just schema defaults)
     if "progress_summary" not in raw_ticket or not str(raw_ticket.get("progress_summary", "")).strip():
         raise ValueError("Manager ticket must include a non-empty progress_summary.")
     if "remaining_work" not in raw_ticket or not isinstance(raw_ticket.get("remaining_work"), list):
@@ -119,14 +142,38 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     try:
         dev = DevResponse.model_validate(raw_dev)
     except ValidationError as e:
-        log_event(repo_root, {"ts": utc_now_iso(), "type": "apply_error", "run": run_dir.name, "error": f"Invalid dev_response.json: {e}"})
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "apply_error",
+                "run": run_dir.name,
+                "error": f"Invalid dev_response.json: {e}",
+            },
+        )
         raise ValueError(f"Invalid dev_response.json: {e}") from e
 
     if dev.ticket_id != ticket.id:
         raise ValueError("dev_response.ticket_id does not match ticket.id")
 
+    # --- Mode B hard gate: DEV may only touch Ticket.files_to_modify (+ pinned rule) ---
+    scope_errs = validate_dev_ops_scope(raw_dev, raw_ticket, st=st)
+    if scope_errs:
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "apply_error",
+                "run": run_dir.name,
+                "error": "Dev ops out of scope: " + " | ".join(scope_errs),
+            },
+        )
+        raise ValueError("Dev ops out of scope: " + " | ".join(scope_errs))
+
+    # Apply ops
     apply_file_ops(workspace_root, cfg, dev.file_ops)
 
+    # Update state
     remaining = sanitize_remaining_work(ticket.remaining_work)
     is_complete = len(remaining) == 0
 
@@ -141,10 +188,12 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         if st_after.get("phase") == "completed":
             st_after["phase"] = "implementation"
 
+    # Shallow merge state_update
     if isinstance(ticket.state_update, dict) and ticket.state_update:
         for k, v in ticket.state_update.items():
             st_after[k] = v
 
+    # Mode B: file tracking + pinning
     touched_paths = [op.path.replace("\\", "/") for op in dev.file_ops]
     pin_files = raw_ticket.get("pin_files", [])
     if not isinstance(pin_files, list):
@@ -200,7 +249,14 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
     p = Progress()
 
     p.tick("Create run folder (+ load objective state)")
-    run_dir = create_run(repo_root, project, objective, focus=focus, objective_file=objective_file, mode="auto")
+    run_dir = create_run(
+        repo_root,
+        project,
+        objective,
+        focus=focus,
+        objective_file=objective_file,
+        mode="auto",
+    )
 
     cfg = load_config(repo_root)
     meta = read_json(run_dir / "run_meta.json")
@@ -211,6 +267,7 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
     conventions, relevant_files = build_context(workspace_root, cfg, focus=focus, objective_text=objective)
     base_manager_prompt = make_manager_prompt(cfg, objective, conventions, relevant_files, state=st)
 
+    # -------- Manager (with retries) --------
     p.tick("Manager → API call")
     manager_prompt = base_manager_prompt
     ticket_obj: Dict[str, Any] = {}
@@ -218,11 +275,20 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
     for attempt in range(0, MAX_MANAGER_RETRIES + 1):
         ticket_obj = generate_json("manager", manager_prompt)
 
-        log_event(repo_root, {"ts": utc_now_iso(), "type": "manager_ticket", "run": run_dir.name, "attempt": attempt, "ticket": ticket_obj})
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "manager_ticket",
+                "run": run_dir.name,
+                "attempt": attempt,
+                "ticket": ticket_obj,
+            },
+        )
 
         errs = manager_validation_errors(ticket_obj, st)
 
-        # IMPORTANT: validate full Ticket schema (id/title/goal/etc)
+        # Validate full Ticket schema (id/title/goal/etc.)
         try:
             _ = Ticket.model_validate(ticket_obj)
         except ValidationError as e:
@@ -231,7 +297,16 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
         if not errs:
             break
 
-        log_event(repo_root, {"ts": utc_now_iso(), "type": "manager_ticket_invalid", "run": run_dir.name, "attempt": attempt, "errors": errs})
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "manager_ticket_invalid",
+                "run": run_dir.name,
+                "attempt": attempt,
+                "errors": errs,
+            },
+        )
 
         if attempt >= MAX_MANAGER_RETRIES:
             raise ValueError("Manager ticket invalid: " + " | ".join(errs))
@@ -245,6 +320,7 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
 
     ticket = Ticket.model_validate(ticket_obj)
 
+    # -------- Dev (with retries) --------
     p.tick("Build dev prompt (in-memory)")
     base_dev_prompt = make_dev_prompt(cfg, ticket)
     dev_prompt = base_dev_prompt
@@ -253,9 +329,24 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
     dev_obj: Dict[str, Any] = {}
     for attempt in range(0, MAX_DEV_RETRIES + 1):
         dev_obj = generate_json("dev", dev_prompt)
-        log_event(repo_root, {"ts": utc_now_iso(), "type": "dev_response", "run": run_dir.name, "attempt": attempt, "dev_response": dev_obj})
+
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "dev_response",
+                "run": run_dir.name,
+                "attempt": attempt,
+                "dev_response": dev_obj,
+            },
+        )
 
         errs = validate_dev_ops_nonempty(dev_obj)
+
+        # --- Mode B hard gate (pre-pydantic): scope + pinned enforcement ---
+        if not errs:
+            errs.extend(validate_dev_ops_scope(dev_obj, ticket_obj, st=st))
+
         if not errs:
             try:
                 _ = DevResponse.model_validate(dev_obj)
@@ -263,7 +354,16 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
             except ValidationError as e:
                 errs.append(f"Invalid DevResponse schema: {e}")
 
-        log_event(repo_root, {"ts": utc_now_iso(), "type": "dev_response_invalid", "run": run_dir.name, "attempt": attempt, "errors": errs})
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "dev_response_invalid",
+                "run": run_dir.name,
+                "attempt": attempt,
+                "errors": errs,
+            },
+        )
 
         if attempt >= MAX_DEV_RETRIES:
             raise ValueError("Dev response invalid: " + " | ".join(errs))
@@ -273,12 +373,20 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
     p.tick("Write dev_response.json")
     write_json(run_dir / "dev_response.json", dev_obj)
 
+    # -------- Apply --------
     p.tick("Apply file ops + update objective state")
-    meta["objective"] = objective
-    meta["objective_file"] = objective_file or None
-    write_json(run_dir / "run_meta.json", meta)
+    try:
+        meta["objective"] = objective
+        meta["objective_file"] = objective_file or None
+        write_json(run_dir / "run_meta.json", meta)
 
-    apply_run(repo_root, run_dir, project=project)
+        apply_run(repo_root, run_dir, project=project)
+    except Exception as e:
+        log_event(
+            repo_root,
+            {"ts": utc_now_iso(), "type": "apply_error", "run": run_dir.name, "error": str(e)},
+        )
+        raise
 
     p.tick("Done")
     return run_dir
@@ -295,12 +403,20 @@ def loop_run(
     stop_on_empty_todo: bool = True,
     max_consecutive_errors: int = 2,
 ) -> Dict[str, Any]:
-    cfg = load_config(repo_root)
-    workspace_root = cfg.projects_root / project
-
+    workspace_root = get_workspace_root(repo_root, project)
     sid = state_id_from_objective(objective, objective_file)
 
-    log_event(repo_root, {"ts": utc_now_iso(), "type": "loop_start", "project": project, "state_id": sid, "max_iter": max_iter, "stop_on_empty_todo": stop_on_empty_todo})
+    log_event(
+        repo_root,
+        {
+            "ts": utc_now_iso(),
+            "type": "loop_start",
+            "project": project,
+            "state_id": sid,
+            "max_iter": max_iter,
+            "stop_on_empty_todo": stop_on_empty_todo,
+        },
+    )
 
     consecutive_errors = 0
     runs: List[str] = []
@@ -309,21 +425,56 @@ def loop_run(
         st = load_or_init_state(workspace_root, objective=objective, objective_file=objective_file)
         todo = st.get("todo", [])
 
+        # stop when todo is empty and at least one successful run exists
         if stop_on_empty_todo and isinstance(todo, list) and len(todo) == 0 and st.get("last_run") is not None:
-            log_event(repo_root, {"ts": utc_now_iso(), "type": "loop_stop_done", "project": project, "state_id": sid, "iter": i})
+            log_event(
+                repo_root,
+                {"ts": utc_now_iso(), "type": "loop_stop_done", "project": project, "state_id": sid, "iter": i},
+            )
             break
 
-        log_event(repo_root, {"ts": utc_now_iso(), "type": "loop_iter_start", "project": project, "state_id": sid, "iter": i, "todo_len": len(todo) if isinstance(todo, list) else None})
+        log_event(
+            repo_root,
+            {
+                "ts": utc_now_iso(),
+                "type": "loop_iter_start",
+                "project": project,
+                "state_id": sid,
+                "iter": i,
+                "todo_len": len(todo) if isinstance(todo, list) else None,
+            },
+        )
 
         try:
-            run_dir = auto_run(repo_root, project, objective, focus=focus, objective_file=objective_file)
-            runs.append(run_dir.name)
+            rd = auto_run(repo_root, project, objective, focus=focus, objective_file=objective_file)
+            runs.append(rd.name)
             consecutive_errors = 0
         except Exception as e:
             consecutive_errors += 1
-            log_event(repo_root, {"ts": utc_now_iso(), "type": "loop_iter_error", "project": project, "state_id": sid, "iter": i, "error": str(e), "consecutive_errors": consecutive_errors})
+            log_event(
+                repo_root,
+                {
+                    "ts": utc_now_iso(),
+                    "type": "loop_iter_error",
+                    "project": project,
+                    "state_id": sid,
+                    "iter": i,
+                    "error": str(e),
+                    "consecutive_errors": consecutive_errors,
+                },
+            )
             if consecutive_errors >= max_consecutive_errors:
-                log_event(repo_root, {"ts": utc_now_iso(), "type": "loop_stop_errors", "project": project, "state_id": sid, "iter": i, "consecutive_errors": consecutive_errors})
+                log_event(
+                    repo_root,
+                    {
+                        "ts": utc_now_iso(),
+                        "type": "loop_stop_errors",
+                        "project": project,
+                        "state_id": sid,
+                        "iter": i,
+                        "consecutive_errors": consecutive_errors,
+                    },
+                )
                 break
 
     st_final = load_or_init_state(workspace_root, objective=objective, objective_file=objective_file)

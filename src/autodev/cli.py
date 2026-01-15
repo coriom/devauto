@@ -100,27 +100,15 @@ def main() -> None:
         objective = _load_objective(args)
         patch_text = _load_patch_text(args)
 
-        # Backward-compatible: only pass patch_text if core supports it.
-        # (Once core is updated, it should accept patch_text / patch_file.)
-        try:
-            run_dir = create_run(
-                repo_root,
-                args.project,
-                objective,
-                focus=args.focus,
-                objective_file=args.objective_file,
-                patch_text=patch_text,
-                patch_file=args.patch_file,
-            )
-        except TypeError:
-            # Core not updated yet; fall back to old signature
-            run_dir = create_run(
-                repo_root,
-                args.project,
-                objective,
-                focus=args.focus,
-                objective_file=args.objective_file,
-            )
+        run_dir = create_run(
+            repo_root,
+            args.project,
+            objective,
+            focus=args.focus,
+            objective_file=args.objective_file,
+            patch_text=patch_text,
+            patch_file=args.patch_file,
+        )
 
         print(f"Created: {run_dir}")
         print(f"- Open {run_dir / 'manager_prompt.txt'} and paste Manager JSON into {run_dir / 'ticket.json'}")
@@ -140,24 +128,15 @@ def main() -> None:
         objective = _load_objective(args)
         patch_text = _load_patch_text(args)
 
-        try:
-            run_dir = auto_run(
-                repo_root,
-                args.project,
-                objective,
-                focus=args.focus,
-                objective_file=args.objective_file,
-                patch_text=patch_text,
-                patch_file=args.patch_file,
-            )
-        except TypeError:
-            run_dir = auto_run(
-                repo_root,
-                args.project,
-                objective,
-                focus=args.focus,
-                objective_file=args.objective_file,
-            )
+        run_dir = auto_run(
+            repo_root,
+            args.project,
+            objective,
+            focus=args.focus,
+            objective_file=args.objective_file,
+            patch_text=patch_text,
+            patch_file=args.patch_file,
+        )
 
         print(f"Auto completed. Run: {run_dir}")
         print(f"Applied into projets/{args.project}/. See: {run_dir / 'summary.md'}")
@@ -167,30 +146,18 @@ def main() -> None:
         patch_text = _load_patch_text(args)
         stop_on_empty = not args.no_stop_on_empty_todo
 
-        try:
-            summary = loop_run(
-                repo_root,
-                args.project,
-                objective,
-                objective_file=args.objective_file,
-                focus=args.focus,
-                max_iter=args.max_iter,
-                stop_on_empty_todo=stop_on_empty,
-                max_consecutive_errors=args.max_consecutive_errors,
-                patch_text=patch_text,
-                patch_file=args.patch_file,
-            )
-        except TypeError:
-            summary = loop_run(
-                repo_root,
-                args.project,
-                objective,
-                objective_file=args.objective_file,
-                focus=args.focus,
-                max_iter=args.max_iter,
-                stop_on_empty_todo=stop_on_empty,
-                max_consecutive_errors=args.max_consecutive_errors,
-            )
+        summary = loop_run(
+            repo_root,
+            args.project,
+            objective,
+            objective_file=args.objective_file,
+            focus=args.focus,
+            max_iter=args.max_iter,
+            stop_on_empty_todo=stop_on_empty,
+            max_consecutive_errors=args.max_consecutive_errors,
+            patch_text=patch_text,
+            patch_file=args.patch_file,
+        )
 
         print("\nLoop summary:")
         print(f"- Project: {summary.get('project')}")
