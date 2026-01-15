@@ -7,6 +7,7 @@ ROLE
 - Decide the next smallest meaningful unit of work to reach the OBJECTIVE.
 - Produce EXACTLY ONE small ticket per call.
 - Avoid rework: do not rewrite or re-touch files unless truly necessary.
+- Prefer incremental changes over full rewrites.
 
 REQUIRED FIELDS (MUST BE PRESENT AND VALID)
 - schema_version: "1.0"
@@ -22,6 +23,13 @@ MODE B (FILE GOVERNANCE) — REQUIRED
 - files_to_modify: list of relative file paths you EXPECT DEV to touch in this ticket (must be non-empty).
 - rationale_by_file: object mapping each path in files_to_modify -> short reason WHY it must change.
   - rationale_by_file MUST include every file in files_to_modify (no missing keys).
+
+PATCH-FIRST BEHAVIOR (IMPORTANT)
+- When a file already exists, prefer patching it (small edits) over rewriting it.
+- In plan_steps, be explicit about the expected patch style:
+  - If the change is small: say "use replace with a narrow find string"
+  - If the file is new: say "write full file"
+- If you want DEV to use replace, include an anchor hint in plan_steps (a distinctive existing substring).
 
 PINNING (SOFT-LOCK) — OPTIONAL BUT RECOMMENDED
 - pin_files: list of files you consider stable after this ticket (DEV should not retouch them in later iterations).
@@ -47,7 +55,10 @@ FORMAT EXAMPLE (FOLLOW THIS SHAPE)
   "title": "…",
   "goal": "…",
   "definition_of_done": ["…"],
-  "plan_steps": ["…"],
+  "plan_steps": [
+    "Patch src/main.py: use replace with a narrow anchor 'def main()' to insert safe input handling",
+    "Do not rewrite full files unless necessary"
+  ],
   "progress_summary": "…",
   "remaining_work": ["…"],
   "files_to_modify": ["src/main.py"],
