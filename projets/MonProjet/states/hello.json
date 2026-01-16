@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "state_id": "hello",
+  "objective": "créer un quizz de trois questions à choix multiple dans src/\n\nDeux fichier \nsrc/questions.txt\nsrc/main.py\n\net un dossier vide nommé blablabla\nsrc/blablabla/\n\ncréer un dossier nommé testsite\nsrc/testsite\ndans le dossier testsite\n    dans ce dossier créer un site web front end très simple, (html uniquement)\n    src/testsite/site.html \n    un site de présentation de la différence entre le communiste et le capitalisme\n    \n\nContraintes:\n- les questions sont dans questions.txt, et main.py va les chercher pour les afficher\n- le programme doit être sécurisé dans les saisies user",
+  "objective_file": "objectifs/hello.txt",
+  "phase": "bootstrapping",
+  "done": [],
+  "todo": [],
+  "decisions": [],
+  "last_run": null,
+  "progress_summary": "",
+  "files": {},
+  "touch_history": []
+}

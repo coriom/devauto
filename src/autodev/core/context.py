@@ -34,6 +34,8 @@ def build_context(
         "Never add state bookkeeping tasks to remaining_work. Orchestrator handles state persistence.",
         "Mode B: avoid rewriting the same file repeatedly. If a file was already completed/pinned, do NOT touch it unless you explicitly justify it (allow_retouch_pinned + rationale_by_file).",
         "Mode B: prefer adding 'files_to_modify' to the ticket so DEV stays in-scope.",
+        # Patch governance
+        "If PATCH_TEXT is provided in INPUT, treat it as highest priority constraints/changes for this iteration, but do not violate Mode B rules.",
     ]
 
     picked: List[str] = []
@@ -80,9 +82,18 @@ def make_manager_prompt(
     conventions: List[str],
     relevant_files: List[Dict],
     state: Dict,
+    *,
+    patch_text: str = "",
+    patch_file: str = "",
 ) -> str:
+    """
+    patch_text: optional prioritized modification instructions (already loaded as text)
+    patch_file: optional path (string) used only for traceability in the prompt payload
+    """
     payload = {
         "objective": objective,
+        "patch_text": patch_text or "",
+        "patch_file": patch_file or "",
         "state": state,
         "conventions": conventions,
         "relevant_files": relevant_files,

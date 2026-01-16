@@ -59,6 +59,8 @@ def create_run(
     focus: str = "",
     objective_file: str = "",
     *,
+    patch_text: str = "",
+    patch_file: str = "",
     mode: str = "human",  # "human" or "auto"
 ) -> Path:
     cfg = load_config(repo_root)
@@ -77,9 +79,17 @@ def create_run(
         focus=focus,
         objective_text=objective,
     )
-    manager_prompt = make_manager_prompt(cfg, objective, conventions, relevant_files, state=st)
+    manager_prompt = make_manager_prompt(
+        cfg,
+        objective,
+        conventions,
+        relevant_files,
+        state=st,
+        patch_text=patch_text or "",
+        patch_file=patch_file or "",
+    )
 
-    # IMPORTANT: always persist objective into run_meta.json
+    # Persist objective + patch info into run_meta.json (for apply_run and audit)
     meta = {
         "ts": utc_now_iso(),
         "project": project,
@@ -87,6 +97,8 @@ def create_run(
         "focus": focus,
         "objective": objective,
         "objective_file": objective_file or None,
+        "patch_file": patch_file or None,
+        "patch_text": patch_text or "",
         "state_id": st.get("state_id"),
     }
     write_json(run_dir / "run_meta.json", meta)
@@ -132,7 +144,6 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         )
         raise ValueError(f"Invalid ticket.json: {e}") from e
 
-    # Strict required fields (runtime checks, not just schema defaults)
     if "progress_summary" not in raw_ticket or not str(raw_ticket.get("progress_summary", "")).strip():
         raise ValueError("Manager ticket must include a non-empty progress_summary.")
     if "remaining_work" not in raw_ticket or not isinstance(raw_ticket.get("remaining_work"), list):
@@ -156,7 +167,7 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     if dev.ticket_id != ticket.id:
         raise ValueError("dev_response.ticket_id does not match ticket.id")
 
-    # --- Mode B hard gate: DEV may only touch Ticket.files_to_modify (+ pinned rule) ---
+    # Mode B hard gate: DEV may only touch Ticket.files_to_modify (+ pinned rule)
     scope_errs = validate_dev_ops_scope(raw_dev, raw_ticket, st=st)
     if scope_errs:
         log_event(
@@ -170,10 +181,8 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         )
         raise ValueError("Dev ops out of scope: " + " | ".join(scope_errs))
 
-    # Apply ops
     apply_file_ops(workspace_root, cfg, dev.file_ops)
 
-    # Update state
     remaining = sanitize_remaining_work(ticket.remaining_work)
     is_complete = len(remaining) == 0
 
@@ -188,12 +197,10 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         if st_after.get("phase") == "completed":
             st_after["phase"] = "implementation"
 
-    # Shallow merge state_update
     if isinstance(ticket.state_update, dict) and ticket.state_update:
         for k, v in ticket.state_update.items():
             st_after[k] = v
 
-    # Mode B: file tracking + pinning
     touched_paths = [op.path.replace("\\", "/") for op in dev.file_ops]
     pin_files = raw_ticket.get("pin_files", [])
     if not isinstance(pin_files, list):
@@ -245,7 +252,16 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     (run_dir / "summary.md").write_text("\n".join(summary), encoding="utf-8")
 
 
-def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", objective_file: str = "") -> Path:
+def auto_run(
+    repo_root: Path,
+    project: str,
+    objective: str,
+    focus: str = "",
+    objective_file: str = "",
+    *,
+    patch_text: str = "",
+    patch_file: str = "",
+) -> Path:
     p = Progress()
 
     p.tick("Create run folder (+ load objective state)")
@@ -255,6 +271,8 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
         objective,
         focus=focus,
         objective_file=objective_file,
+        patch_text=patch_text or "",
+        patch_file=patch_file or "",
         mode="auto",
     )
 
@@ -265,7 +283,15 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
 
     p.tick("Build manager prompt (in-memory)")
     conventions, relevant_files = build_context(workspace_root, cfg, focus=focus, objective_text=objective)
-    base_manager_prompt = make_manager_prompt(cfg, objective, conventions, relevant_files, state=st)
+    base_manager_prompt = make_manager_prompt(
+        cfg,
+        objective,
+        conventions,
+        relevant_files,
+        state=st,
+        patch_text=patch_text or "",
+        patch_file=patch_file or "",
+    )
 
     # -------- Manager (with retries) --------
     p.tick("Manager → API call")
@@ -288,7 +314,6 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
 
         errs = manager_validation_errors(ticket_obj, st)
 
-        # Validate full Ticket schema (id/title/goal/etc.)
         try:
             _ = Ticket.model_validate(ticket_obj)
         except ValidationError as e:
@@ -343,7 +368,6 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
 
         errs = validate_dev_ops_nonempty(dev_obj)
 
-        # --- Mode B hard gate (pre-pydantic): scope + pinned enforcement ---
         if not errs:
             errs.extend(validate_dev_ops_scope(dev_obj, ticket_obj, st=st))
 
@@ -378,6 +402,8 @@ def auto_run(repo_root: Path, project: str, objective: str, focus: str = "", obj
     try:
         meta["objective"] = objective
         meta["objective_file"] = objective_file or None
+        meta["patch_file"] = patch_file or meta.get("patch_file") or None
+        meta["patch_text"] = patch_text or meta.get("patch_text") or ""
         write_json(run_dir / "run_meta.json", meta)
 
         apply_run(repo_root, run_dir, project=project)
@@ -402,6 +428,8 @@ def loop_run(
     max_iter: int = 10,
     stop_on_empty_todo: bool = True,
     max_consecutive_errors: int = 2,
+    patch_text: str = "",
+    patch_file: str = "",
 ) -> Dict[str, Any]:
     workspace_root = get_workspace_root(repo_root, project)
     sid = state_id_from_objective(objective, objective_file)
@@ -425,7 +453,6 @@ def loop_run(
         st = load_or_init_state(workspace_root, objective=objective, objective_file=objective_file)
         todo = st.get("todo", [])
 
-        # stop when todo is empty and at least one successful run exists
         if stop_on_empty_todo and isinstance(todo, list) and len(todo) == 0 and st.get("last_run") is not None:
             log_event(
                 repo_root,
@@ -446,7 +473,15 @@ def loop_run(
         )
 
         try:
-            rd = auto_run(repo_root, project, objective, focus=focus, objective_file=objective_file)
+            rd = auto_run(
+                repo_root,
+                project,
+                objective,
+                focus=focus,
+                objective_file=objective_file,
+                patch_text=patch_text or "",
+                patch_file=patch_file or "",
+            )
             runs.append(rd.name)
             consecutive_errors = 0
         except Exception as e:

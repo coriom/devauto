@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
+
 from pydantic import BaseModel, Field
 
 Priority = Literal["P0", "P1", "P2"]
@@ -44,7 +45,7 @@ class Ticket(BaseModel):
     files_to_modify: List[str] = Field(default_factory=list)
 
     # Justification for touching each file (key = path)
-    # Strongly recommended for any file in files_to_modify, and REQUIRED for pinned retouch.
+    # REQUIRED for pinned retouch, and strongly recommended for all files_to_modify.
     rationale_by_file: Dict[str, str] = Field(default_factory=dict)
 
     # If you must retouch pinned files, list them here (must be subset of files_to_modify)
