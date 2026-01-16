@@ -1,0 +1,56 @@
+PATCH OBJECTIVE (TOP PRIORITY):
+Refactor src/main.py to be clean, minimal, and deterministic.
+Ask ONLY ONE question (the first valid question in src/questions.txt) and print "Score: X/1".
+
+SCOPE:
+- Modify ONLY: src/main.py
+- Do NOT modify src/questions.txt, src/testsite/*, or any other file.
+
+FORMAT GUARANTEE (MATCH CURRENT questions.txt):
+- Ignore blank lines and lines starting with '#'
+- Questions are separated by a line that is exactly: ---
+- Each block uses:
+  Q: <text>
+  A) <text>
+  B) <text>
+  C) <text>
+  D) <text>
+  ANS: <A|B|C|D>
+
+STRICT RULES:
+- Remove all duplicated / conflicting definitions in src/main.py:
+  - Exactly ONE Question dataclass
+  - Exactly ONE ask_choice
+  - Exactly ONE parse_questions
+  - Exactly ONE run_quiz
+  - Exactly ONE main
+- No unreachable code, no second parser, no second return paths.
+- Keep safe input handling:
+  - Only accept A/B/C/D (strip + upper)
+  - On EOFError or KeyboardInterrupt: exit cleanly with no traceback.
+
+TARGET IMPLEMENTATION:
+- @dataclass(frozen=True) class Question:
+    prompt: str
+    options: dict[str, str]
+    answer: str
+- read_questions_file(path: str) -> str
+- parse_questions(text: str) -> list[Question]
+  - use ONLY the '---' separator logic
+  - enforce that all A/B/C/D exist and ANS is valid
+- ask_choice(prompt: str) -> str (loop until valid)
+- run_quiz(q: Question) -> int (ask ONLY this single question)
+- main():
+  - read src/questions.txt (same path logic as today)
+  - parse questions
+  - if no valid question -> print an error and return non-zero
+  - else take the first question only, run it, print "Score: X/1", return 0/1
+
+PATCH STYLE (IMPORTANT):
+- If src/main.py is currently messy (duplicate defs etc.), DO NOT attempt multiple replace patches.
+- Prefer a single "write" op to rewrite src/main.py entirely with the clean minimal implementation above.
+- Keep imports minimal (only needed stdlib).
+
+DONE WHEN:
+- Running `python src/main.py` asks exactly ONE question and prints "Score: X/1"
+- src/main.py contains no duplicate definitions.

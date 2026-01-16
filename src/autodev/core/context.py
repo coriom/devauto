@@ -33,9 +33,9 @@ def build_context(
         "The objective is the source of truth; STATE is a progress tracker/cache. If STATE is missing items, reconstruct remaining_work from the objective.",
         "Never add state bookkeeping tasks to remaining_work. Orchestrator handles state persistence.",
         "Mode B: avoid rewriting the same file repeatedly. If a file was already completed/pinned, do NOT touch it unless you explicitly justify it (allow_retouch_pinned + rationale_by_file).",
-        "Mode B: prefer adding 'files_to_modify' to the ticket so DEV stays in-scope.",
+        "Mode B: files_to_modify must be non-empty and should be the only files DEV touches.",
         # Patch governance
-        "If PATCH_TEXT is provided in INPUT, treat it as highest priority constraints/changes for this iteration, but do not violate Mode B rules.",
+        "If PATCH_TEXT is provided in INPUT, treat it as highest-priority constraints/changes for this iteration, but do not violate Mode B rules.",
     ]
 
     picked: List[str] = []
@@ -102,21 +102,35 @@ def make_manager_prompt(
             "id": "T-YYYY-NNNN",
             "title": "Short title",
             "goal": "Outcome",
+            "priority": "P1",
+            "labels": ["optional"],
             "definition_of_done": ["..."],
             "plan_steps": ["..."],
-            "labels": ["optional"],
-            "progress_summary": "Where we are now (must be non-empty)",
+            "progress_summary": "Where we are now (MUST be non-empty).",
             "remaining_work": [
-                "What remains after this ticket (explicit, must be present even if empty at completion). "
+                "What remains after this ticket (MUST be present, may be empty when fully done). "
                 "Do NOT include internal state/update tasks."
             ],
-            "state_update": {"optional": "partial state update for this objective state file"},
-            # Mode B optional fields (extras accepted even if Ticket ignores extras)
-            "files_to_modify": ["Optional but recommended: explicit file targets for this ticket"],
-            "rationale_by_file": {"path": "why this file must be touched now"},
-            "allow_retouch_pinned": ["If you must touch pinned files, list them here"],
-            "pin_files": ["If you consider some files stable after this ticket, list them here"],
+            "state_update": {"optional": "partial shallow merge into objective state"},
+            # Mode B (now part of the Ticket model, not just extras)
+            "files_to_modify": [
+                "REQUIRED (non-empty): explicit file targets DEV is allowed to touch in this ticket."
+            ],
+            "rationale_by_file": {
+                "path": "REQUIRED for each files_to_modify entry: why it must change now"
+            },
+            "pin_files": [
+                "Optional: files considered stable after this ticket (soft-lock)."
+            ],
+            "allow_retouch_pinned": [
+                "Only if you must modify a pinned file: must be subset of files_to_modify."
+            ],
         },
+        "instructions": [
+            "If patch_text is non-empty: prioritize it for THIS iteration.",
+            "Keep ticket small and localized (few files).",
+            "Avoid rework: don't retouch pinned/stable files unless necessary and explicitly allowed.",
+        ],
     }
     return cfg.manager_prompt.strip() + "\n\nINPUT:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 

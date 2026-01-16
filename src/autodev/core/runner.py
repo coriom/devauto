@@ -89,7 +89,7 @@ def create_run(
         patch_file=patch_file or "",
     )
 
-    # Persist objective + patch info into run_meta.json (for apply_run and audit)
+    # IMPORTANT: always persist objective (+ patch info) into run_meta.json
     meta = {
         "ts": utc_now_iso(),
         "project": project,
@@ -135,19 +135,21 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     except ValidationError as e:
         log_event(
             repo_root,
-            {
-                "ts": utc_now_iso(),
-                "type": "apply_error",
-                "run": run_dir.name,
-                "error": f"Invalid ticket.json: {e}",
-            },
+            {"ts": utc_now_iso(), "type": "apply_error", "run": run_dir.name, "error": f"Invalid ticket.json: {e}"},
         )
         raise ValueError(f"Invalid ticket.json: {e}") from e
 
+    # Strict required fields (runtime checks)
     if "progress_summary" not in raw_ticket or not str(raw_ticket.get("progress_summary", "")).strip():
         raise ValueError("Manager ticket must include a non-empty progress_summary.")
     if "remaining_work" not in raw_ticket or not isinstance(raw_ticket.get("remaining_work"), list):
         raise ValueError("Manager ticket must include remaining_work as a list (may be empty when completed).")
+
+    # Mode B REQUIRED (now enforced, since it's in the model + prompts)
+    if not isinstance(raw_ticket.get("files_to_modify"), list) or len(raw_ticket.get("files_to_modify")) == 0:
+        raise ValueError("Manager ticket must include files_to_modify as a non-empty list (Mode B).")
+    if not isinstance(raw_ticket.get("rationale_by_file"), dict) or len(raw_ticket.get("rationale_by_file")) == 0:
+        raise ValueError("Manager ticket must include rationale_by_file as a non-empty object (Mode B).")
 
     raw_dev = read_json(run_dir / "dev_response.json")
     try:
@@ -167,7 +169,7 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
     if dev.ticket_id != ticket.id:
         raise ValueError("dev_response.ticket_id does not match ticket.id")
 
-    # Mode B hard gate: DEV may only touch Ticket.files_to_modify (+ pinned rule)
+    # --- Mode B hard gate: DEV may only touch Ticket.files_to_modify (+ pinned rule) ---
     scope_errs = validate_dev_ops_scope(raw_dev, raw_ticket, st=st)
     if scope_errs:
         log_event(
@@ -181,8 +183,10 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         )
         raise ValueError("Dev ops out of scope: " + " | ".join(scope_errs))
 
+    # Apply ops
     apply_file_ops(workspace_root, cfg, dev.file_ops)
 
+    # Update state
     remaining = sanitize_remaining_work(ticket.remaining_work)
     is_complete = len(remaining) == 0
 
@@ -197,10 +201,12 @@ def apply_run(repo_root: Path, run_dir: Path, project: Optional[str] = None) -> 
         if st_after.get("phase") == "completed":
             st_after["phase"] = "implementation"
 
+    # Shallow merge state_update
     if isinstance(ticket.state_update, dict) and ticket.state_update:
         for k, v in ticket.state_update.items():
             st_after[k] = v
 
+    # Mode B: file tracking + pinning
     touched_paths = [op.path.replace("\\", "/") for op in dev.file_ops]
     pin_files = raw_ticket.get("pin_files", [])
     if not isinstance(pin_files, list):
@@ -289,8 +295,8 @@ def auto_run(
         conventions,
         relevant_files,
         state=st,
-        patch_text=patch_text or "",
-        patch_file=patch_file or "",
+        patch_text=patch_text or meta.get("patch_text", "") or "",
+        patch_file=patch_file or meta.get("patch_file", "") or "",
     )
 
     # -------- Manager (with retries) --------
@@ -303,17 +309,12 @@ def auto_run(
 
         log_event(
             repo_root,
-            {
-                "ts": utc_now_iso(),
-                "type": "manager_ticket",
-                "run": run_dir.name,
-                "attempt": attempt,
-                "ticket": ticket_obj,
-            },
+            {"ts": utc_now_iso(), "type": "manager_ticket", "run": run_dir.name, "attempt": attempt, "ticket": ticket_obj},
         )
 
         errs = manager_validation_errors(ticket_obj, st)
 
+        # Validate full Ticket schema
         try:
             _ = Ticket.model_validate(ticket_obj)
         except ValidationError as e:
@@ -324,13 +325,7 @@ def auto_run(
 
         log_event(
             repo_root,
-            {
-                "ts": utc_now_iso(),
-                "type": "manager_ticket_invalid",
-                "run": run_dir.name,
-                "attempt": attempt,
-                "errors": errs,
-            },
+            {"ts": utc_now_iso(), "type": "manager_ticket_invalid", "run": run_dir.name, "attempt": attempt, "errors": errs},
         )
 
         if attempt >= MAX_MANAGER_RETRIES:
@@ -357,17 +352,12 @@ def auto_run(
 
         log_event(
             repo_root,
-            {
-                "ts": utc_now_iso(),
-                "type": "dev_response",
-                "run": run_dir.name,
-                "attempt": attempt,
-                "dev_response": dev_obj,
-            },
+            {"ts": utc_now_iso(), "type": "dev_response", "run": run_dir.name, "attempt": attempt, "dev_response": dev_obj},
         )
 
         errs = validate_dev_ops_nonempty(dev_obj)
 
+        # --- Mode B hard gate (pre-pydantic): scope + pinned enforcement ---
         if not errs:
             errs.extend(validate_dev_ops_scope(dev_obj, ticket_obj, st=st))
 
@@ -380,13 +370,7 @@ def auto_run(
 
         log_event(
             repo_root,
-            {
-                "ts": utc_now_iso(),
-                "type": "dev_response_invalid",
-                "run": run_dir.name,
-                "attempt": attempt,
-                "errors": errs,
-            },
+            {"ts": utc_now_iso(), "type": "dev_response_invalid", "run": run_dir.name, "attempt": attempt, "errors": errs},
         )
 
         if attempt >= MAX_DEV_RETRIES:
@@ -403,15 +387,12 @@ def auto_run(
         meta["objective"] = objective
         meta["objective_file"] = objective_file or None
         meta["patch_file"] = patch_file or meta.get("patch_file") or None
-        meta["patch_text"] = patch_text or meta.get("patch_text") or ""
+        meta["patch_text"] = patch_text or meta.get("patch_text", "") or ""
         write_json(run_dir / "run_meta.json", meta)
 
         apply_run(repo_root, run_dir, project=project)
     except Exception as e:
-        log_event(
-            repo_root,
-            {"ts": utc_now_iso(), "type": "apply_error", "run": run_dir.name, "error": str(e)},
-        )
+        log_event(repo_root, {"ts": utc_now_iso(), "type": "apply_error", "run": run_dir.name, "error": str(e)})
         raise
 
     p.tick("Done")
@@ -454,22 +435,12 @@ def loop_run(
         todo = st.get("todo", [])
 
         if stop_on_empty_todo and isinstance(todo, list) and len(todo) == 0 and st.get("last_run") is not None:
-            log_event(
-                repo_root,
-                {"ts": utc_now_iso(), "type": "loop_stop_done", "project": project, "state_id": sid, "iter": i},
-            )
+            log_event(repo_root, {"ts": utc_now_iso(), "type": "loop_stop_done", "project": project, "state_id": sid, "iter": i})
             break
 
         log_event(
             repo_root,
-            {
-                "ts": utc_now_iso(),
-                "type": "loop_iter_start",
-                "project": project,
-                "state_id": sid,
-                "iter": i,
-                "todo_len": len(todo) if isinstance(todo, list) else None,
-            },
+            {"ts": utc_now_iso(), "type": "loop_iter_start", "project": project, "state_id": sid, "iter": i, "todo_len": len(todo) if isinstance(todo, list) else None},
         )
 
         try:
@@ -488,27 +459,12 @@ def loop_run(
             consecutive_errors += 1
             log_event(
                 repo_root,
-                {
-                    "ts": utc_now_iso(),
-                    "type": "loop_iter_error",
-                    "project": project,
-                    "state_id": sid,
-                    "iter": i,
-                    "error": str(e),
-                    "consecutive_errors": consecutive_errors,
-                },
+                {"ts": utc_now_iso(), "type": "loop_iter_error", "project": project, "state_id": sid, "iter": i, "error": str(e), "consecutive_errors": consecutive_errors},
             )
             if consecutive_errors >= max_consecutive_errors:
                 log_event(
                     repo_root,
-                    {
-                        "ts": utc_now_iso(),
-                        "type": "loop_stop_errors",
-                        "project": project,
-                        "state_id": sid,
-                        "iter": i,
-                        "consecutive_errors": consecutive_errors,
-                    },
+                    {"ts": utc_now_iso(), "type": "loop_stop_errors", "project": project, "state_id": sid, "iter": i, "consecutive_errors": consecutive_errors},
                 )
                 break
 
